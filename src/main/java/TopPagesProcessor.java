@@ -40,10 +40,12 @@ public final class TopPagesProcessor {
     
     public static final String USERS_TOPIC = "users";
     public static final String PAGEVIEWS_TOPIC = "pageviews";
-    public static final String TOPPAGES_TOPIC = "phil_test";
+    public static final String TOPPAGES_TOPIC = "top_pages";
     
     
     public static Map<String, Long> maleTop10 = new HashMap<String, Long>();
+    public static Map<String, Long> femaleTop10 = new HashMap<String, Long>();
+    public static Map<String, Long> otherTop10 = new HashMap<String, Long>();
     
     static Properties getStreamsConfig() {
         final Properties props = new Properties();
@@ -61,18 +63,12 @@ public final class TopPagesProcessor {
     }
     
     static void createTopPagesStream(final StreamsBuilder builder) {
-    
-        // A hopping time window with a size of 5 minutes and an advance interval of 1 minute.
-        // The window's name -- the string parameter -- is used to e.g. name the backing state store.
-        long windowSizeMs = TimeUnit.MINUTES.toMillis(1);
-        long advanceMs =    TimeUnit.SECONDS.toMillis(10);
-        TimeWindows.of(windowSizeMs).advanceBy(advanceMs);
-    
+        
         
         final KStream<String, String> users = builder.stream(USERS_TOPIC).map((key, value) -> KeyValue.pair(key.toString(), getJsonValueFromKey(value.toString(), "gender")));
         final KStream<String, String> pageviews = builder.stream(PAGEVIEWS_TOPIC).map((key, value) -> KeyValue.pair(getJsonValueFromKey(value.toString(), "userid"), getJsonValueFromKey(value.toString(), "pageid")));
-    
-    
+        
+        
         KStream<String, String>[] branches = users.join(pageviews,
                         (leftValue, rightValue) -> "{\"gender\":\"" + leftValue + "\",\"pageid\":\"" + rightValue + "\"}", /* ValueJoiner */
                         JoinWindows.of(TimeUnit.MINUTES.toMillis(10)),
@@ -83,26 +79,74 @@ public final class TopPagesProcessor {
                                                        ).map((key, value) -> KeyValue.pair(getJsonValueFromKey(value.toString(), "gender"),
                         getJsonValueFromKey(value.toString(), "pageid")))
                         .branch(
-                        (key, value) -> key.equals("MALE"), /* first predicate  */
-                        (key, value) -> key.equals("FEMALE"), /* second predicate */
-                        (key, value) -> key.equals("OTHER"));          /* third predicate  */
-    
-    
-        KStream<String, String> maleOutput = branches[0].groupBy((key, value) -> value).count().toStream().map((key, value) -> KeyValue.pair("MALE", updateMaleTopTen(key, value)));
-   
-  
-        KStream<String, String> oneMinuteOutput = maleOutput.groupByKey().windowedBy(TimeWindows.of(Duration.ofMinutes(1)))
+                                        (key, value) -> key.equals("MALE"), /* first predicate  */
+                                        (key, value) -> key.equals("FEMALE"), /* second predicate */
+                                        (key, value) -> key.equals("OTHER"));          /* third predicate  */
+        
+        
+        // A hopping time window with a size of 5 minutes and an advance interval of 1 minute.
+        // The window's name -- the string parameter -- is used to e.g. name the backing state store.
+        long windowSizeMs = TimeUnit.MINUTES.toMillis(1);
+        long advanceMs =    TimeUnit.SECONDS.toMillis(10);
+        TimeWindows.of(windowSizeMs).advanceBy(advanceMs);
+        
+        
+        KStream<String, String> maleTopTenOutput = branches[0].groupBy((key, value) -> value).windowedBy(TimeWindows.of(windowSizeMs).advanceBy(advanceMs)).count().toStream().map((key, value) -> KeyValue.pair("MALE", updateMaleTopTen(key.key(), value)));
+        KStream<String, String> femaleTopTenOutput = branches[1].groupBy((key, value) -> value).count().toStream().map((key, value) -> KeyValue.pair("FEMALE", updateFemaleTopTen(key, value)));
+        KStream<String, String> otherTopTenOutput = branches[2].groupBy((key, value) -> value).count().toStream().map((key, value) -> KeyValue.pair("OTHER", updateOtherTopTen(key, value)));
+        
+        KStream<String, String> oneMinuteOutput = maleTopTenOutput.groupByKey().windowedBy(TimeWindows.of(Duration.ofMinutes(1)))
                         .aggregate(String::new, (key, value, aggr) -> { return value;}).toStream().map((key, value) -> KeyValue.pair("MALE", value));
-        
-        
-        oneMinuteOutput.foreach(new ForeachAction<String, String>() {
-            public void apply(String key, String value) {
-                System.out.println(key + " : " + value);
-            }
-        });
+        KStream<String, String> oneMinuteOutputFemale = femaleTopTenOutput.groupByKey().windowedBy(TimeWindows.of(Duration.ofMinutes(1)))
+                        .aggregate(String::new, (key, value, aggr) -> { return value;}).toStream().map((key, value) -> KeyValue.pair("FEMALE", value));
+        KStream<String, String> oneMinuteOutputOther = otherTopTenOutput.groupByKey().windowedBy(TimeWindows.of(Duration.ofMinutes(1)))
+                        .aggregate(String::new, (key, value, aggr) -> { return value;}).toStream().map((key, value) -> KeyValue.pair("OTHER", value));
     
-
-
+    
+        oneMinuteOutput.to(TOPPAGES_TOPIC);
+        oneMinuteOutputFemale.to(TOPPAGES_TOPIC);
+        oneMinuteOutputOther.to(TOPPAGES_TOPIC);
+//        oneMinuteOutputOther.foreach(new ForeachAction<String, String>() {
+//            public void apply(String key, String value) {
+//                System.out.println(key + " : " + value);
+//            }
+//        });
+        
+        
+        
+    }
+    
+    
+    private static String updateFemaleTopTen(String page, Long count) {
+        if(femaleTop10.size()>=10){
+            Long lowestCount = femaleTop10.entrySet().iterator().next().getValue();
+            String lowestPage = femaleTop10.entrySet().iterator().next().getKey();
+            if(count>lowestCount){
+                femaleTop10.remove(lowestPage);
+                femaleTop10.put(page, count);
+                femaleTop10 = sortMapByValue();
+            }
+        }else {
+            femaleTop10.put(page, count);
+            femaleTop10 = sortMapByValue();
+        }
+        return new JSONObject(femaleTop10).toJSONString();
+    }
+    
+    private static String updateOtherTopTen(String page, Long count) {
+        if(otherTop10.size()>=10){
+            Long lowestCount = otherTop10.entrySet().iterator().next().getValue();
+            String lowestPage = otherTop10.entrySet().iterator().next().getKey();
+            if(count>lowestCount){
+                otherTop10.remove(lowestPage);
+                otherTop10.put(page, count);
+                otherTop10 = sortMapByValue();
+            }
+        }else {
+            otherTop10.put(page, count);
+            otherTop10 = sortMapByValue();
+        }
+        return new JSONObject(otherTop10).toJSONString();
     }
     
     private static String updateMaleTopTen(String page, Long count) {
