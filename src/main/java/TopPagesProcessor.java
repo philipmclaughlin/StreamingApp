@@ -92,8 +92,8 @@ public final class TopPagesProcessor {
         
         
         KStream<String, String> maleTopTenOutput = branches[0].groupBy((key, value) -> value).windowedBy(TimeWindows.of(windowSizeMs).advanceBy(advanceMs)).count().toStream().map((key, value) -> KeyValue.pair("MALE", updateMaleTopTen(key.key(), value)));
-        KStream<String, String> femaleTopTenOutput = branches[1].groupBy((key, value) -> value).count().toStream().map((key, value) -> KeyValue.pair("FEMALE", updateFemaleTopTen(key, value)));
-        KStream<String, String> otherTopTenOutput = branches[2].groupBy((key, value) -> value).count().toStream().map((key, value) -> KeyValue.pair("OTHER", updateOtherTopTen(key, value)));
+        KStream<String, String> femaleTopTenOutput = branches[1].groupBy((key, value) -> value).windowedBy(TimeWindows.of(windowSizeMs).advanceBy(advanceMs)).count().toStream().map((key, value) -> KeyValue.pair("FEMALE", updateFemaleTopTen(key.key(), value)));
+        KStream<String, String> otherTopTenOutput = branches[2].groupBy((key, value) -> value).windowedBy(TimeWindows.of(windowSizeMs).advanceBy(advanceMs)).count().toStream().map((key, value) -> KeyValue.pair("OTHER", updateOtherTopTen(key.key(), value)));
         
         KStream<String, String> oneMinuteOutput = maleTopTenOutput.groupByKey().windowedBy(TimeWindows.of(Duration.ofMinutes(1)))
                         .aggregate(String::new, (key, value, aggr) -> { return value;}).toStream().map((key, value) -> KeyValue.pair("MALE", value));
@@ -111,8 +111,6 @@ public final class TopPagesProcessor {
 //                System.out.println(key + " : " + value);
 //            }
 //        });
-        
-        
         
     }
     
